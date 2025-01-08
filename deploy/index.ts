@@ -722,33 +722,35 @@ export async function loadDeployment(
   };
 }
 
-const deployProxy: DeployF = async (hre, factory, { initArguments, confirmations }) => {
-  const contract = await hre.upgrades.deployProxy(factory, initArguments, {
-    kind: "transparent",
-    // We use a couple of external libraries so we need to tell the upgrades plugin
-    // to trust our linking.
-    // See https://docs.openzeppelin.com/upgrades-plugins/1.x/faq#why-cant-i-use-external-libraries
-    unsafeAllow: ["external-library-linking"],
-  });
-  await contract.deployTransaction.wait(confirmations);
-  return contract;
-};
+let dogethereumFixture: DogethereumFixture;
 
-const deployPlain: DeployF = async (hre, factory, { initArguments, confirmations }) => {
-  const contract = await factory.deploy(...initArguments);
-  await contract.deployTransaction.wait(confirmations);
-  return contract;
-};
+/**
+ * This deploys the Dogethereum system the first time it's called.
+ * Meant to be used in a test suite.
+ * In particular, it will deploy the DogeTokenForTests and ScryptCheckerDummy contracts.
+ * @param hre The Hardhat runtime environment where the deploy takes place.
+ */
+export async function deployFixture(hre: HardhatRuntimeEnvironment): Promise<DogethereumFixture> {
+  if (dogethereumFixture === undefined) {
+    const { scryptChecker } = await deployScryptCheckerDummy(hre);
+    const dogethereum = await deployDogethereum(hre, {
+      dogeTokenContractName: "DogeTokenForTests",
+      scryptChecker,
+    });
+    dogethereumFixture = {
+      superblocks: dogethereum.superblocks.contract,
+      superblockClaims: dogethereum.superblockClaims.contract,
+      battleManager: dogethereum.battleManager.contract,
+      dogeToken: dogethereum.dogeToken.contract,
+      setLibrary: dogethereum.setLibrary.contract,
+      dogeMessageLibrary: dogethereum.dogeMessageLibrary.contract,
+      scryptChecker: dogethereum.scryptChecker.contract,
+    };
+  }
+  return dogethereumFixture;
+}
 
-const deployPlainWithInit: DeployF = async (hre, factory, { initArguments, confirmations }) => {
-  const contract = await factory.deploy();
-  await contract.deployTransaction.wait(confirmations);
-  const initTx = (await contract.initialize(...initArguments)) as ethers.ContractTransaction;
-  await initTx.wait(confirmations);
-  return contract;
-};
-
-export async function deployContract(
+async function deployContract(
   contractName: string,
   initArguments: InitializerArguments,
   hre: HardhatRuntimeEnvironment,
@@ -756,18 +758,131 @@ export async function deployContract(
   confirmations = 0,
   deployPrimitive = deployPlain
 ): Promise<ethers.Contract> {
-  // TODO: `getContractFactory` gets a default signer so we may want to remove this.
-  if (options.signer === undefined) {
-    throw new Error("No wallet or signer defined for deployment.");
-  }
+  try {
+    console.log(`Getting contract factory for ${contractName}...`);
+    const factory = await hre.ethers.getContractFactory(contractName, options);
+    
+    if (!factory) {
+      throw new Error(`Failed to get contract factory for ${contractName}`);
+    }
 
-  const factory = await hre.ethers.getContractFactory(contractName, options);
-  const contract = await deployPrimitive(hre, factory, {
-    initArguments,
-    confirmations,
-  });
-  return contract;
+    console.log(`Deploying ${contractName}...`);
+    const contract = await deployPrimitive(hre, factory, {
+      initArguments,
+      confirmations,
+    });
+
+    console.log(`${contractName} deployed at: ${contract.address}`);
+    return contract;
+  } catch (error) {
+    console.error(`Failed to deploy ${contractName}:`, error);
+    throw error;
+  }
 }
+
+const deployProxy: DeployF = async (hre, factory, { initArguments, confirmations }) => {
+  try {
+    const contract = await hre.upgrades.deployProxy(factory, initArguments, {
+      kind: "transparent",
+      unsafeAllow: ["external-library-linking"],
+    });
+
+    // Wait for deployment to complete
+    const deploymentReceipt = await hre.ethers.provider.waitForTransaction(
+      contract.deployTransaction.hash,
+      confirmations
+    );
+
+    if (!deploymentReceipt || deploymentReceipt.status === 0) {
+      throw new Error("Proxy deployment failed");
+    }
+
+    // Verify contract deployment
+    const deployedCode = await hre.ethers.provider.getCode(contract.address);
+    if (deployedCode === "0x") {
+      throw new Error("Proxy deployment failed - no code at contract address");
+    }
+
+    return contract;
+  } catch (error) {
+    console.error("Proxy deployment error:", error);
+    throw error;
+  }
+};
+
+const deployPlainWithInit: DeployF = async (hre, factory, { initArguments, confirmations }) => {
+  try {
+    // Deploy the contract
+    const contract = await factory.deploy();
+
+    // Wait for deployment to complete
+    const deploymentReceipt = await hre.ethers.provider.waitForTransaction(
+      contract.deployTransaction.hash,
+      confirmations
+    );
+
+    if (!deploymentReceipt || deploymentReceipt.status === 0) {
+      throw new Error("Contract deployment failed");
+    }
+
+    // Verify contract deployment
+    const deployedCode = await hre.ethers.provider.getCode(contract.address);
+    if (deployedCode === "0x") {
+      throw new Error("Contract deployment failed - no code at contract address");
+    }
+
+    // Initialize the contract
+    const initTx = (await contract.initialize(...initArguments)) as ethers.ContractTransaction;
+
+    // Wait for initialization
+    const initReceipt = await hre.ethers.provider.waitForTransaction(
+      initTx.hash,
+      confirmations
+    );
+
+    if (!initReceipt || initReceipt.status === 0) {
+      throw new Error("Contract initialization failed");
+    }
+
+    return contract;
+  } catch (error) {
+    console.error("Deployment with init error:", error);
+    throw error;
+  }
+};
+
+const deployPlain: DeployF = async (hre, factory, { initArguments, confirmations }) => {
+  try {
+    console.log(`Deploying contract with ${initArguments.length} arguments...`);
+    
+    // Deploy the contract
+    const contract = await factory.deploy(...initArguments);
+    console.log(`Deployment transaction hash: ${contract.deployTransaction.hash}`);
+    
+    // Wait for deployment to complete
+    console.log(`Waiting for ${confirmations} confirmation(s)...`);
+    await contract.deployed();
+    
+    if (confirmations > 0) {
+      const deploymentReceipt = await contract.deployTransaction.wait(confirmations);
+      if (!deploymentReceipt || deploymentReceipt.status === 0) {
+        throw new Error("Contract deployment failed");
+      }
+    }
+
+    // Verify contract deployment
+    const deployedCode = await hre.ethers.provider.getCode(contract.address);
+    if (deployedCode === "0x") {
+      throw new Error("Contract deployment failed - no code at contract address");
+    }
+
+    console.log(`Contract deployed successfully at: ${contract.address}`);
+    return contract;
+  } catch (error) {
+    console.error("Deployment error:", error);
+    throw error;
+  }
+};
 
 export async function initSuperblockChain(
   hre: HardhatRuntimeEnvironment,
@@ -878,32 +993,4 @@ export async function initSuperblockChain(
     scryptChecker,
     scryptVerifier,
   };
-}
-
-let dogethereumFixture: DogethereumFixture;
-
-/**
- * This deploys the Dogethereum system the first time it's called.
- * Meant to be used in a test suite.
- * In particular, it will deploy the DogeTokenForTests and ScryptCheckerDummy contracts.
- * @param hre The Hardhat runtime environment where the deploy takes place.
- */
-export async function deployFixture(hre: HardhatRuntimeEnvironment): Promise<DogethereumFixture> {
-  if (dogethereumFixture === undefined) {
-    const { scryptChecker } = await deployScryptCheckerDummy(hre);
-    const dogethereum = await deployDogethereum(hre, {
-      dogeTokenContractName: "DogeTokenForTests",
-      scryptChecker,
-    });
-    dogethereumFixture = {
-      superblocks: dogethereum.superblocks.contract,
-      superblockClaims: dogethereum.superblockClaims.contract,
-      battleManager: dogethereum.battleManager.contract,
-      dogeToken: dogethereum.dogeToken.contract,
-      setLibrary: dogethereum.setLibrary.contract,
-      dogeMessageLibrary: dogethereum.dogeMessageLibrary.contract,
-      scryptChecker: dogethereum.scryptChecker.contract,
-    };
-  }
-  return dogethereumFixture;
 }
