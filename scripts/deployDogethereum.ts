@@ -40,10 +40,14 @@ const localOracles: PriceOracles = {};
  * This script always deploys the production token.
  */
 async function main() {
+  console.log("Starting deployment...");
   const deploymentDir = getDefaultDeploymentPath(hre);
+  console.log("Deployment directory:", deploymentDir);
+  
   const deploymentExists = await fs.pathExists(
     path.join(deploymentDir, DEPLOYMENT_JSON_NAME)
   );
+  console.log("Deployment exists:", deploymentExists);
 
   if (deploymentExists && hre.network.name !== "hardhat") {
     // We support only one deployment for each network for now.
@@ -52,9 +56,14 @@ async function main() {
 
   // TODO: parametrize these when we write this as a Hardhat task.
   const dogecoinNetworkId = DogecoinNetworkId.Regtest;
+  console.log("Using Dogecoin network:", dogecoinNetworkId);
+  
   const superblockOptions = getSuperblockchainOptions(hre.network.name);
+  console.log("Superblock options:", JSON.stringify(superblockOptions, null, 2));
 
+  console.log("Deploying or getting ScryptChecker...");
   const { scryptChecker } = await deployOrGetScryptChecker();
+  console.log("ScryptChecker deployed/retrieved");
 
   // TODO: add testnet oracles when they are available.
   let oracles: PriceOracles;

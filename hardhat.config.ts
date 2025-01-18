@@ -11,9 +11,15 @@ const config: HardhatUserConfig = {
         hardhat: {
             // TODO: lower this a bit?
             blockGasLimit: 4000000000,
+            chainId: 31337,
         },
         development: {
             url: "http://127.0.0.1:8545",
+            accounts: ["0x"], //add private key
+            chainId: 48815,
+            timeout: 60000,  // increase timeout duration
+            gas: 8000000,    // set gas limit
+            gasPrice: "auto" // automatically set gas price
         },
         integrationDogeMain: {
             url: "http://127.0.0.1:8545",
